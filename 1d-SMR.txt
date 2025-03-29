@@ -1,0 +1,500 @@
+"""
+Parameters of a bench scale experiment done by Abrosetti
+Experimental investigation and 2D mathematical modelling of copper foams packed with Rh-Al2O3 catalysts for the intensification of methane
+steam reforming
+https://doi.org/10.1016/j.cattod.2023.114386 
+"""
+import numpy as np
+import sympy as sp
+import matplotlib.pyplot as plt
+
+# Reactor and foam geometry
+diameter_cm = 2.95           # cm
+radius_cm = diameter_cm / 2
+foam_thickness_cm = 1.25     # cm
+num_foams = 5
+porosity = 0.88              # void fraction
+
+# Catalyst mass
+catalyst_mass_g = 21.92      # grams
+
+# Volume of the foam stack (cylinder)
+height_cm = foam_thickness_cm * num_foams
+volume_cm3 = np.pi * radius_cm**2 * height_cm  # cm³
+
+# Volume of the solid structure inside foam
+solid_volume_cm3 = (1 - porosity) * volume_cm3
+
+# Catalyst bulk density (based on full reactor volume)
+bulk_density_g_cm3 = catalyst_mass_g / volume_cm3
+bulk_density_kg_m3 = bulk_density_g_cm3 * 1000  # convert to kg/m³
+#rho_g_m3 = bulk_density_kg_m3*1000
+rho_g_m3 = 1000 # placeholder value to help debugging
+print("bulk catalyst density", rho_g_m3)
+# Optional: catalyst solid density (if needed)
+solid_density_g_cm3 = catalyst_mass_g / solid_volume_cm3
+solid_density_kg_m3 = solid_density_g_cm3 * 1000
+
+# Print results
+print(f"Catalyst bulk density: {bulk_density_kg_m3:.2f} kg/m³")
+
+"""
+This script brings the reaction kinetics linearization.
+Also solves for brinkmann, then for coupled component and temperature balances
+"""
+# Define stoichiometric coefficients for MSR and WGS
+# If a species does not participate, use 0
+stoic_MSR = {
+    "CH4": -1,
+    "H2O": -1,
+    "CO":  +1,
+    "H2":  +3,
+    "CO2": 0
+}
+
+stoic_WGS = {
+    "CH4": 0,
+    "H2O": -1,
+    "CO":  -1,
+    "H2":  +1,
+    "CO2": +1
+}
+
+# Arrhenius parameters (pre-exponential factor and activation energy)
+k_params = {
+  "MSR": (7.84e-2, 101100),      # k in mol/gcat/s/atm e Ea in J
+  "WGS": (2.64e-1, 51100)       # k in mol/gcat/s/atm^2 e Ea in J
+}
+
+# Adsorption equilibrium constants (at T0=873K)
+K_ads_params = {
+  "CO": (2.11e2, -32700)   # kads in 1/atm, deltaH in J/mol
+}
+
+def arrhenius(k0, Ea, T, T0=873):
+    """
+    Compute the rate constant using modified Arrhenius equation.
+    k0: Pre-exponential factor
+    Ea: Activation energy (J/mol)
+    T: Temperature (K)
+    T0: Reference temperature (K)
+    """
+    R = 8.314  # Universal gas constant, J/(mol*K)
+    return k0 * np.exp(-Ea / R * (1 / T - 1 / T0))
+
+def reaction_rates_smr(PCH4, PCO2, PH2, PH2O, PCO, T):
+    """
+    Compute reaction rates for steam methane reforming (SMR).
+    """
+    
+    # Compute rate constants
+    k = {key: arrhenius(v[0], v[1], T) for key, v in k_params.items()}
+    #print("kMSR", k["MSR"], "kWGS",k["WGS"])
+    # Compute adsorption constants
+    K_ads = {key: arrhenius(v[0], v[1], T) for key, v in K_ads_params.items()}
+    #print("K_ads",K_ads)
+    # Equilibrium approach terms
+    Kp_MSR = (PCO * PH2**3) / (PCH4 * PH2O)
+    Kp_WGS = (PCO2 * PH2) / (PCO * PH2O)
+    #print("Kp_MSR",Kp_MSR,"Kp_WGS",Kp_WGS)
+    # Reaction rate equations
+    r_MSR = rho_g_m3*k["MSR"] * PCH4 * (1 - Kp_MSR) / (1 + K_ads["CO"] * PCO)
+    r_WGS = rho_g_m3*k["WGS"] * PH2O * PCO * (1 - Kp_WGS) / (1 + K_ads["CO"] * PCO)
+    #print("r_MSR",r_MSR,"r_WGS",r_WGS)
+    return {"r_MSR": r_MSR, "r_WGS": r_WGS}
+
+def arrhenius_sym(k0, Ea, T):
+  #T = sp.symbols('T'). This variable should come as an argument from compute_taxa_derivatives
+  T0 = 873 # K
+  R = 8.314  # Universal gas constant, J/(mol*K)
+  return k0 * sp.exp(-Ea / R * (1 / T - 1 / T0))
+
+  
+def compute_taxa_derivatives(T_num, PCH4_num, PH2O_num, PCO_num, PH2_num, PCO2_num): #input numerical values to the function
+    
+    R = 8.314  # Universal gas constant, J/(mol*K)
+  
+    # Define symbolic variables
+    T, PCH4, PH2O, PCO, PH2, PCO2 = sp.symbols('T PCH4 PH2O PCO PH2 PCO2') 
+
+    # Compute wimbolic rate constants
+    kr_sym = {key: arrhenius_sym(v[0], v[1], T) for key, v in k_params.items()}
+    #print("Rate constants:", kr_sym)
+    # Compute adsorption constants
+    Kads_sym = {key: arrhenius_sym(v[0], v[1], T) for key, v in K_ads_params.items()}
+    #print("Adsorption constants:", Kads_sym)
+
+    # Equilibrium approach terms
+    Kp_MSR_sym = (PCO * PH2**3) / (PCH4 * PH2O)
+    Kp_WGS_sym = (PCO2 * PH2) / (PCO * PH2O)
+    #print("Kp_MSR:", Kp_MSR_sym)
+    #print("Kp_WGS:", Kp_WGS_sym)
+
+    # Reaction rate equations
+    r_MSR_sym = rho_g_m3*kr_sym["MSR"] * PCH4 * (1 - Kp_MSR_sym) / (1 + Kads_sym["CO"] * PCO) #mol/gcat*s
+    r_WGS_sym = rho_g_m3*kr_sym["WGS"] * PH2O * PCO * (1 - Kp_WGS_sym) / (1 + Kads_sym["CO"] * PCO) #mol/gcat*s
+
+    # Compute derivatives for each taxa equation
+    derivatives = {
+        "d(r_MSR)/dT": sp.diff(r_MSR_sym, T),
+        "d(r_MSR)/dPCH4": sp.diff(r_MSR_sym, PCH4),
+        "d(r_MSR)/dPH2O": sp.diff(r_MSR_sym, PH2O),
+        "d(r_MSR)/dPCO": sp.diff(r_MSR_sym, PCO),
+        "d(r_MSR)/dPH2": sp.diff(r_MSR_sym, PH2),
+        "d(r_MSR)/dPCO2": sp.diff(r_MSR_sym, PCO2),
+
+        "d(r_WGS)/dT": sp.diff(r_WGS_sym, T),
+        "d(r_WGS)/dPCH4": sp.diff(r_WGS_sym, PCH4),
+        "d(r_WGS)/dPH2O": sp.diff(r_WGS_sym, PH2O),
+        "d(r_WGS)/dPCO": sp.diff(r_WGS_sym, PCO),
+        "d(r_WGS)/dPH2": sp.diff(r_WGS_sym, PH2),
+        "d(r_WGS)/dPCO2": sp.diff(r_WGS_sym, PCO2),
+    }
+
+    # Create a dictionary to store numerical values by substituting the scalar inputs
+    subs_dict = {
+        T: T_num,
+        PCH4: PCH4_num,
+        PH2O: PH2O_num,
+        PCO: PCO_num,
+        PH2: PH2_num,
+        PCO2: PCO2_num,
+    }
+
+    numerical_derivs = {key: round(float(expr.subs(subs_dict).evalf()), 5) for key, expr in derivatives.items()}
+
+    return derivatives, numerical_derivs
+
+#=---------------------------------------------- Actual solver routine -----------------------------------
+N = 20 # discretization points number
+R = 8.314  # Universal gas constant, J/(mol*K)
+
+# Set boundary conditions (velocity at inlet, pressure at outlet)
+p_out = 7e5  # Outlet pressure in Pa
+
+#reactor geometry
+L_reactor = 2 #m reactor lenght
+D_reactor = 1 #m reactor diameter
+A_reactor = np.pi * (D_reactor**2) / 4 #m² reactor cross sectional area
+dx = L_reactor / (N-1)  # Reactor length = 1m
+points = np.linspace(0, L_reactor, N)  # Spatial points
+
+#fluid velocity
+GHSV = 65700 # 32900, 65700 and 98600 N L h−1 kgcat-1.
+Q_in = 0.7 # m³/s inlet volumetric flow
+epsilon = 0.6 #posoridade do leito
+u_in = Q_in/(A_reactor*epsilon)  # m/s  inlet velocity
+
+# Coefficients for discretized Brinkman equation
+mu = 1.8e-5
+K = 1e-8
+
+# Fluid Properties
+Mm = 16 #molar mass of methane in g/mol
+rho = p_out*Mm/(R*873)  # Density (kg/m³) (Example value, adjust as needed)
+Diff = 1.48e-5 #m2/s calculated for 850 K and 7 bar with chapman-enskog adjust for P and T
+
+#Energy balance terms
+q_flux = 1e9  # Wall heat flux (W/m)
+cp = 4200  # Specific heat capacity (J/(kg·K))
+k = 1e-3 # coeficiente condução térmica aleatório
+T_in = 700 # K
+dH = {
+  "MSR": 206000,  # Endothermic
+  "WGS": -41000  # Exothermic
+}
+
+# ------------------------------ Brinkmann solver ----------------------
+
+# Define the system matrix and right-hand side vector for brinkmann equation
+A_matrix = np.zeros((2*N, 2*N))
+b_vector = np.zeros((2*N))
+
+#Define the string matrix to follow the construction of the problem
+A_matrix_visual = [["" for _ in range(2*N)]for _ in range(2*N)]
+
+A_coef = mu / dx**2
+B_coef = mu / K
+C_coef = 1 / (2 * dx)  # Coefficient for dp/dx
+
+# Loop over internal nodes to fill the system
+for i in range(1, N-1):
+    u_idx = i
+    p_idx = N + i
+
+    # Brinkman equation (momentum balance) 
+    ## Velocity terms - Central differences
+    A_matrix[u_idx, u_idx-1] = A_coef  # u[i-1]
+    A_matrix[u_idx, u_idx] = -(2*A_coef + B_coef)  # u[i]
+    A_matrix[u_idx, u_idx+1] = A_coef  # u[i+1]
+
+    A_matrix_visual[u_idx][u_idx-1] = "A_coef"
+    A_matrix_visual[u_idx][u_idx] = "-(2*A_coef + B_coef)"
+    A_matrix_visual[u_idx][u_idx+1] = "A_coef"  
+    
+    ## Pressure terms - NEW: Forward Difference 
+    A_matrix[u_idx, p_idx] = -C_coef  # -dp/dx term at +i
+    A_matrix[u_idx, p_idx-1] = +C_coef   # +dp/dx term at i
+
+    A_matrix_visual[u_idx][p_idx] = "-C_coef"
+    A_matrix_visual[u_idx][p_idx-1] = "+C_coef"
+
+    b_vector[u_idx] = 0
+  
+    # Continuity equation
+    A_matrix[p_idx, u_idx+1] = epsilon / dx  # du/dx term
+    A_matrix[p_idx, u_idx-1] = -epsilon / dx # -du/dx
+
+    b_vector[p_idx] = 0
+
+    A_matrix_visual[p_idx][u_idx+1] = "epsilon / dx"
+    A_matrix_visual[p_idx][u_idx-1] = "-epsilon / dx"
+
+# Apply boundary conditions
+A_matrix[0, 0] = 1  # Fix inlet velocity
+b_vector[0] = u_in
+
+A_matrix[2*N-1, 2*N-1] = 1  # Fix outlet pressure
+b_vector[2*N-1] = p_out
+
+A_matrix_visual[0][0] = "1"
+A_matrix_visual[2*N-1][2*N-1] = "1"
+
+# Continuity equation at the inlet (one-sided difference)
+A_matrix[N, 0] = -epsilon / dx  # -du/dx at node 0
+A_matrix[N, 1] = epsilon / dx   # +du/dx at node 1
+b_vector[N] = 0
+
+A_matrix_visual[N][0] = "-epsilon / dx"
+A_matrix_visual[N][1] = "epsilon / dx"
+
+
+# newmann condition
+
+A_matrix[N-1, N-2] = -1/dx
+A_matrix[N-1, N-1] = 1/dx
+b_vector[N-1] = 0
+
+A_matrix[N-1, 2*N-2] = C_coef  # p_(N-2)
+A_matrix[N-1, 2*N-1] = -C_coef  # p_(N-1)
+b_vector[N-1] = 0
+
+A_matrix_visual[N-1][N-2] = "-1/dx"
+A_matrix_visual[N-1][N-1] = "1/dx"
+A_matrix_visual[N-1][2*N-2] = "C_coef"
+A_matrix_visual[N-1][2*N-1] = "-C_coef"
+
+bk_solution = np.linalg.solve(A_matrix, b_vector)
+
+# Extract velocity and pressure solutions
+u_solution = bk_solution[:N]
+p_solution = bk_solution[N:]
+
+# Print solutions
+print("\nVelocity Solution (u):")
+print(u_solution)
+print("Pressure Solution (p):")
+print(p_solution)
+
+# Plot pressure profile along the reactor
+plt.figure(figsize=(6,4))
+plt.plot(points, p_solution, marker='o', linestyle='-', color='blue', label='Pressure (Pa)')
+plt.xlabel('Reactor Length (m)')
+plt.ylabel('Pressure (Pa)')
+plt.title('Pressure Profile Along Reactor')
+plt.grid(True)
+plt.legend()
+plt.show()
+
+# ------------------- Finish Brinkmann Solver --------------#
+
+# ------------------- Start Heat and Component Coupled Solver -----------------#
+
+T_0 = 700 # Iniitial temperature condition
+P0 = { #Initial partial pressures (atm)
+    "CH4": 1,
+    "H2O": 3,
+    "CO": 0.1,
+    "H2": 0.1,
+    "CO2": 1
+}
+P_in = { #Inlet partial pressures
+    "CH4": 1,
+    "H2O": 3,
+    "CO": 0.1,
+    "H2": 0.1,
+    "CO2": 1
+}
+
+comp_idx = {comp: i for i, comp in enumerate(P_in)}
+num_components = len(P0)
+
+# -------- Start iteration loop to populate A matrix and b vector. --------------
+max_iter = 10
+tol = 1e-4
+
+for it in range (max_iter):
+  #Apply the initial conditions to all reactor extent.
+  if it == 0:
+    Pk = {comp: [val] * N for comp, val in P0.items()} #Initial guess partial pressures
+    Tk = [T_0] * N #Initial temperature
+  else:
+    relax = min(0.3 + 0.1 * it, 0.7)  # Adaptative relaxation. Start conservative, become more aggressive
+    # Use solution from last iteration to override
+    for comp, idx in comp_idx.items():
+        for i in range(N):
+          Pk[comp][i] = (1 - relax) * Pk[comp][i] + relax * C_solution[comp_idx[comp],i]
+    for i in range(N):
+        Tk[i] = max(300, min(1200, (1 - relax) * Tk[i] + relax * T_solution[i])) #relaxation with physical constraints
+  #print("Pk",Pk)
+  #print("Tk",Tk)
+  # Initialize global matrix for coupled system
+  A = np.zeros(((num_components + 1) * N, (num_components + 1) * N), dtype=float)  # Large system matrix
+  b = np.zeros(((num_components + 1) * N), dtype=float)  # Right-hand side vector
+  
+  # Discretize component terms for diffusion and convection
+  
+  for comp, index in comp_idx.items(): #CAUTION, this uses P_in therefore it is not suitable for second loop and can create problems with P_solution. Need to change to concentrations
+    j =  index * N
+    A[j, j] = 1  # Fix inlet for this component
+    b[j] = P_in[comp]
+  
+    #Outlet newmann contidions
+    A[j + N - 1, j + N - 1] = 1
+    A[j + N - 1, j + N - 2] = -1
+    b[j + N - 1] = 0
+   
+    for i in range(1, N-1):  # Internal nodes
+      idx = j + i
+      A[idx, idx - 1] = u_solution[i] / dx - Diff / dx**2  # C_{i-1} coefficient
+      A[idx, idx] = -u_solution[i] / dx + 2 * Diff / dx**2  # C_{i} coefficient
+      A[idx, idx + 1] = -Diff / dx**2  # C_{i+1} coefficient
+      b[idx] = 0  # Reaction term  zero for now, term will be added in specific loop  
+      
+  # Energy equation discretization for diffusion and convection
+  
+  #Apply dirichlet condition inlet for temperature. T(0) = T_in
+  T_row = num_components * N
+  A[T_row, T_row] = 1
+  b[T_row] = T_in
+  # Apply Neumann condition at outlet (dC/dx = 0)
+  A[T_row + N-1, T_row + N-1] = 1
+  A[T_row + N-1, T_row + N-2] = -1
+  b[T_row + N-1] = 0
+  
+  # Energy interior nodes
+  for i in range(1, N-1):
+    idx = T_row + i
+    A[idx, idx - 1] = -rho * cp * u_solution[i] / dx - k / dx**2  # T_{i-1} coefficient
+    A[idx, idx] = rho * cp * u_solution[i] / dx + 2 * k / dx**2  # T_{i} coefficient
+    A[idx, idx + 1] = k / dx**2  # T_{i+1} coefficient
+    b[idx] = q_flux * dx
+
+  # Adding reaction rate into the A matrix
+  """
+  Reaction rate is non linear, that is why we use Taylor linearization
+  Taylor has the following format:
+  ri(xi) =~ ri(xik) + sum dr/dv(xik)* (v-vk) onde v {T,PCH4,PCO2,PH2O...}
+  Taylor needs an initial guess, we will use the reactor initial conditions in all it's extention
+  
+  With the vectors k as an initial guess, we can calculate the initial rate and each partial derivative
+  We know that we must sum each component in it's right cell at the matrix, which is already defined earlier
+  """
+  # List your variable names and assign each variable a position
+  rkMSR = [0.0] * N
+  rkWGS = [0.0] * N
+ 
+  
+  for i in range (1, N-1):  #Loop over spatial points. Não considera reação na entrada nem na saída (condições de contorno)
+    _, num_derivs = compute_taxa_derivatives(Tk[i],Pk["CH4"][i],Pk["H2O"][i],Pk["CO"][i],Pk["H2"][i],Pk["CO2"][i]) #calcula as derivadas 
+    rk = reaction_rates_smr(Pk["CH4"][i],Pk["CO2"][i],Pk["H2"][i],Pk["H2O"][i],Pk["CO"][i],Tk[i]) #calcula a reação 
+    rkWGS[i] = rk["r_WGS"]
+    rkMSR[i] = rk["r_MSR"] #Atribui o dicionario a vetores em i
+          
+    for r_comp, r_index in comp_idx.items(): #Loop over components to fill every one of the components N rows
+      row = r_index * N + i
+      # Fill b_vector at each row with the base rate
+      b[row] +=  stoic_MSR[r_comp]*rkMSR[i]+ stoic_WGS[r_comp] * rkWGS[i] #+stoic_WGS[comp]*rkWGS[i]
+      b[row] -= (stoic_MSR[r_comp]*num_derivs["d(r_MSR)/dT"] +stoic_WGS[r_comp]*num_derivs["d(r_WGS)/dT"]) *Tk[i]
+      # subtract partial derivative wrt T from base rate
+      T_col = num_components*N+i
+      A[row,T_col] -= stoic_MSR[r_comp]*num_derivs["d(r_MSR)/dT"]+ stoic_WGS[r_comp] * num_derivs["d(r_WGS)/dT"]
+        
+      for c_comp, c_index in comp_idx.items(): #Loop over components to address the partial derivatives
+        col = c_index*N + i
+        deriv_key = f'd(r_MSR)/dP{c_comp}' #cria a chave do componente
+        A[row, col] -= stoic_MSR[r_comp]*num_derivs[f'd(r_MSR)/dP{c_comp}'] + stoic_WGS[r_comp]*num_derivs[f'd(r_WGS)/dP{c_comp}'] #Atribui o valor numérico somado na matrix
+        b[row]-= (stoic_MSR[r_comp]*num_derivs[f'd(r_MSR)/dP{c_comp}']* Pk[comp][i] 
+        + stoic_WGS[r_comp] * num_derivs[f'd(r_WGS)/dP{c_comp}'] * Pk[c_comp][i] )# subtrai derivate contribution from RHS
+
+    # Add temperature derivative
+    T_row = num_components*N+i
+    b[T_row] += -dH["MSR"] * rkMSR[i] - dH["WGS"] * rkWGS[i] # VERIFICAR TERMO"""
+    # Print debug info only every x iterations
+    if it % 4 == 0:
+        print(f"--- Iteration {it} debug info ---")
+        print("rkMSR =",it, rkMSR)
+        print("rkWGS =",it, rkWGS)
+        print("num_derivs =",it, num_derivs)
+        print("A =",it, A)
+        print("b =",it, b)
+  # Solve coupled system
+  solution = np.linalg.solve(A, b)
+  
+  # Extract solutions
+  C_solution = solution[:num_components * N].reshape(num_components, N)
+  if np.any(C_solution < 0):
+    print("⚠️ Warning: Negative concentrations detected. Clipping to zero.")
+    C_solution = np.maximum(C_solution, 1e-3)
+  T_solution = solution[num_components * N:]
+  T_solution = np.maximum(T_solution, 1e-3)  # e.g., enforce T_min = 300 K
+
+  print("C_solution", C_solution)
+  
+  ## trying GPT proposal for errors:
+  # Compute maximum error and weighted average error from the 'errors' dictionary
+  errors = {}
+  for comp, idx in comp_idx.items():
+      initial = np.array(Pk[comp])
+      final = C_solution[idx]
+      norm = np.linalg.norm(final - initial) / np.linalg.norm(initial)
+      errors[comp] = round(norm, 6)
+  
+  # Temperature error
+  T_init = np.array(Tk)
+  T_final = T_solution
+  T_error = np.linalg.norm(T_final - T_init) / np.linalg.norm(T_init)
+  errors["T"] = round(T_error, 6)
+
+  err = max(errors.values())
+  print(f"Iteration {it}, error = {err:.3e}")
+#-------------- finish error calculation
+  if err < tol:
+    print("Converged!")
+    break
+    
+
+#------------Finish loop over taylor-----------------
+
+# Plot concentrations
+plt.figure(figsize=(10, 5))
+for comp, index in comp_idx.items():
+    plt.plot(points, C_solution[index], label=comp)
+plt.xlabel("Reactor Length")
+plt.ylabel("Concentration")
+plt.title("Concentration Profiles")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Plot temperature
+plt.figure(figsize=(6, 4))
+plt.plot(points, T_solution, label="Temperature", color="red")
+plt.xlabel("Reactor Length")
+plt.ylabel("Temperature (K)")
+plt.title("Temperature Profile")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
